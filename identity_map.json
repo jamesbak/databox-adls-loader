@@ -1,0 +1,8 @@
+[
+    { "type": "user", "source": "hdfs", "target": "jamesbak@microsoft.com" },
+    { "type": "user", "source": "hive", "target": "jamesbak@microsoft.com" },
+    { "type": "user", "source": "mapred", "target": "jamesbak@microsoft.com" },
+    { "type": "user", "source": "hbase", "target": "jamesbak@microsoft.com" },
+    { "type": "group", "source": "hdfs", "target": "c651f238-0f1b-4131-a6b7-49ace339cb29" },
+    { "type": "group", "source": "hadoop", "target": "mygroup@microsoft.com" }
+]
