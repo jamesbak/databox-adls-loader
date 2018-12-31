@@ -23,14 +23,13 @@ def update_files_owners(files_queue, account, container, sas_token, stop_event):
             file["metadata"]["hdi_permission"] = json.dumps(permissions)
             url = "http://{0}.blob.core.windows.net/{1}/{2}?comp=metadata&{3}".format(account, container, file["name"], sas_token)
             print(url)
-            with requests.put(url, 
-                headers={**{
-                        "x-ms-version": "2018-03-28",
-                        "x-ms-date": datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
-                    },
-                    **{"x-ms-meta-" + name: value for (name, value) in file["metadata"].items()}
-                }
-            ) as response:
+            # No portable way to combine 2 dicts
+            metadata_headers = {
+                "x-ms-version": "2018-03-28",
+                "x-ms-date": datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")
+            }
+            metadata_headers.update({"x-ms-meta-" + name: value for (name, value) in file["metadata"].items()})
+            with requests.put(url, headers=metadata_headers) as response:
                 if not response:
                     print(response.text)
                 else:
@@ -47,7 +46,7 @@ if __name__ == '__main__':
     parser.add_argument('-i', '--identity-map', default="./identity_map.json", help="The name of the JSON file containing the initial map of source identities to target identities")
     parser.add_argument('-p', '--prefix', default='', help="A prefix that constrains the processing. Use this option to process entire account on multiple instances")
     parser.add_argument('-t', '--max-parallelism', type=int, default=10, help="The number of threads to process this work in parallel")
-    args = parser.parse_args()
+    args = parser.parse_known_args()[0]
 
     # Acquire SAS token, so that we don't have to sign each request
     sas_token_bytes = subprocess.check_output(["az", "storage", "account", "generate-sas", 
