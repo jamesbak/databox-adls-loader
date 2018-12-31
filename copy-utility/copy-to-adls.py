@@ -48,12 +48,12 @@ def copy_files(files_queue, stop_event):
     print("Thread ending")
 
 source_account="adlsgen2nohnswest2"
-source_key="B3dTbA7T5KF2YlbdEX3A6Emxa4QfVthQwifYFNqzJIzBCdQXHu3fEX2hZgzne9FwdYzF9QTxdfelG7rIi4dRMg=="
+source_key=""
 source_container="databox1"
 dest_account="adlsgen2hnswestus2"
 dest_container="databox1"
-dest_spn_id="9fe06a52-6dc4-41a7-aff8-a5ee1eff138d"
-dest_spn_secret="9Nkz*-j;2US/aDj0e"
+dest_spn_id=""
+dest_spn_secret=""
 identity_map_file="./identity_map.json"
 
 sas_token = subprocess.check_output(["az", "storage", "account", "generate-sas", 
