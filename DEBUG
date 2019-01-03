@@ -1,0 +1,3 @@
+2019-01-02 19:30:21,492 - shared.adls_copy_utils - INFO - Acquiring SAS token
+2019-01-02 19:30:24,719 - shared.adls_copy_utils - INFO - Fetching complete file list
+2019-01-02 19:30:28,058 - shared.adls_copy_utils - INFO - Loading identity map from: /temp/generated_identity_map.json
