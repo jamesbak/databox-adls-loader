@@ -14,6 +14,9 @@ class AdlsCopyUtils():
     IDENTITY_USER = "user"
     IDENTITY_GROUP = "group"
 
+    METDATA_PERMISSIONS = "hdi_permission"
+    METADATA_ISFOLDER = "hdi_isfolder"
+
     @staticmethod
     def configureLogging(log_config, log_level, log_file):
         if log_config:
@@ -58,10 +61,11 @@ class AdlsCopyUtils():
         return [{
                 "name": x["name"], 
                 "parent_directory": os.path.dirname(x["name"]),
-                "is_folder": "hdi_isfolder" in x["metadata"],
-                "permissions": json.loads(x["metadata"]["hdi_permission"]),
+                "is_folder": AdlsCopyUtils.METADATA_ISFOLDER in x["metadata"],
+                "permissions": json.loads(x["metadata"][AdlsCopyUtils.METDATA_PERMISSIONS]),
+                "length": x["properties"]["contentLength"],
                 "metadata": {k: v for k, v in x["metadata"].items()
-                    if k not in {"hdi_isfolder", "hdi_permission"}}
+                    if k not in {AdlsCopyUtils.METADATA_ISFOLDER, AdlsCopyUtils.METDATA_PERMISSIONS}}
             } 
             for x 
             in json.load(process.stdout)]
@@ -73,6 +77,16 @@ class AdlsCopyUtils():
             return {t: {s["source"]: s["target"] for s in i} 
                 for t, i 
                 in itertools.groupby(json.load(f), lambda x: x["type"])}
+
+    @staticmethod
+    def lookupIdentity(identity_type, identity, identity_map):
+        retval = ""
+        if identity in identity_map[identity_type]:
+            retval = identity_map[identity_type][identity]
+        else:
+            # TODO: Lookup identity in AAD
+            retval=identity
+        return retval
 
     class WorkQueue:
         stop_event = threading.Event()
@@ -113,14 +127,4 @@ class AdlsCopyUtils():
         work_queue.stop_event.set()
         for thread in threads:
             thread.join()
-
-    @staticmethod
-    def lookupIdentity(identity_type, identity, identity_map):
-        retval = ""
-        if identity in identity_map[identity_type]:
-            retval = identity_map[identity_type][identity]
-        else:
-            # TODO: Lookup identity in AAD
-            retval=identity
-        return retval
 

@@ -1,141 +1,169 @@
 #!/usr/bin/env python
 
 import requests
-import subprocess, datetime, json, itertools, os.path, queue, threading
+import subprocess, datetime, json, itertools, os.path, threading, argparse, logging
+from shared.adls_copy_utils import AdlsCopyUtils
 
-access_token=""
-token_refresh_time=datetime.datetime.utcnow()
+BLOCK_SIZE = 20 * pow(2, 20)
 
-def check_access_token(client_id, client_secret):
-    # Check for renewal
-    global token_refresh_time, access_token
-    if datetime.datetime.utcnow() > token_refresh_time:
-        auth_request = requests.post("https://login.microsoftonline.com/common/oauth2/v2.0/token", 
-            data={
-                "client_id": client_id, 
-                "client_secret": client_secret,
-                "scope": "https://storage.azure.com/.default",
-                "grant_type": "client_credentials"
-            },
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded"
-            })
-        token_response = auth_request.json()
-        if auth_request:
-            token_refresh_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=token_response["expires_in"])
-            access_token = token_response["access_token"]
-        else:
-            raise IOError(token_response)
-    return "Bearer " + access_token
+log = logging.getLogger(__name__)
+
+class OAuthBearerToken:
+    def __init__(self, client_id, client_secret):
+        self.access_token = ""
+        self.token_refresh_time = datetime.datetime.utcnow()
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.mutex = threading.Lock()
+
+    def checkAccessToken(self):
+        if datetime.datetime.utcnow() > self.token_refresh_time:
+            with self.mutex:            
+                if datetime.datetime.utcnow() > self.token_refresh_time:
+                    log.debug("Refreshing OAuth token")
+                    with requests.post("https://login.microsoftonline.com/common/oauth2/v2.0/token", 
+                            data={
+                                "client_id": self.client_id, 
+                                "client_secret": self.client_secret,
+                                "scope": "https://storage.azure.com/.default",
+                                "grant_type": "client_credentials"
+                            },
+                            headers={
+                                "Content-Type": "application/x-www-form-urlencoded"
+                            }) as auth_request:
+                        token_response = auth_request.json()
+                        if auth_request:
+                            self.token_refresh_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=token_response["expires_in"])
+                            self.access_token = token_response["access_token"]
+                        else:
+                            raise IOError(token_response)
+        return "Bearer " + self.access_token
 
 def add_identity_header(headers, identity_type, identity, header, identity_map):
-    if identity in identity_map[identity_type]:
-        headers[header] = identity_map[identity_type][identity]
+    mapped_identity = AdlsCopyUtils.lookupIdentity(identity_type, identity, identity_map)
+    if mapped_identity:
+        headers[header] = mapped_identity
     else:
         # TODO: Lookup identity in AAD
-        test=0
+        pass
 
-def copy_files(files_queue, stop_event):
-    print("Thread starting")
-    while not stop_event.is_set():
-        try:
-            file = files_queue.get(True, 5)
-            # TODO: Copy the file
-            print(file["name"])
-            files_queue.task_done()
-        except queue.Empty as e:
-            print(e)
-    print("Thread ending")
-
-source_account="adlsgen2nohnswest2"
-source_key=""
-source_container="databox1"
-dest_account="adlsgen2hnswestus2"
-dest_container="databox1"
-dest_spn_id=""
-dest_spn_secret=""
-identity_map_file="./identity_map.json"
-
-sas_token = subprocess.check_output(["az", "storage", "account", "generate-sas", 
-    "--account-name", source_account, 
-    "--account-key", source_key, 
-    "--services", "b", 
-    "--resource-types", "s", 
-    "--permissions", "lr", 
-    "--expiry", (datetime.datetime.utcnow() + datetime.timedelta(2)).strftime("%Y-%m-%dT%H:%MZ")], shell=True)
-
-process = subprocess.Popen(["az", "storage", "blob", "list", 
-    "--account-name", source_account,
-    "--account-key", source_key,
-    "--container-name", source_container,
-    "--output", "json", 
-    "--num-results", "1000000000",
-    "--include", "m"],
-    stdout=subprocess.PIPE,
-    shell=True)
-inventory = [{
-        "name": x["name"], 
-        "parent_directory": os.path.dirname(x["name"]),
-        "metadata": {k: v for k, v in x["metadata"].items()
-            if k not in {"hdi_isfolder", "hdi_permission"}}, 
-        "is_folder": "hdi_isfolder" in x["metadata"], 
-        "permissions": json.loads(x["metadata"]["hdi_permission"])
-    } 
-    for x 
-    in json.load(process.stdout)]
-# Load identity map
-with open(identity_map_file) as f:
-    identity_map = {t: {s["source"]: s["target"] for s in i} 
-        for t, i 
-        in itertools.groupby(json.load(f), lambda x: x["type"])}
-    
-# Create the directories first
-for directory in [x for x in inventory 
-                    if x["is_folder"]]:
-    dir_base_url = "https://{0}.dfs.core.windows.net/{1}/{2}".format(dest_account, dest_container, directory["name"])
-    dir_url = "{0}?resource=directory".format(dir_base_url)
-    print(dir_url)
-    dir_request = requests.put(dir_url,
+def create_adls_resource(account, container, resource_type, resource, token_handler, identity_map):
+    resource_uri = "https://{0}.dfs.core.windows.net/{1}/{2}?resource={3}".format(account, container, resource["name"], resource_type)
+    log.debug(resource_uri)
+    create_request = requests.put(resource_uri,
         headers = {
             "x-ms-version": "2018-06-17",
             "content-length": "0", 
-            "x-ms-permissions": directory["permissions"]["permissions"],
+            "x-ms-permissions": resource["permissions"]["permissions"],
             "x-ms-umask": "0000",
-            "Authorization": check_access_token(dest_spn_id, dest_spn_secret)
+            "Authorization": token_handler.checkAccessToken()
         })
-    if not dir_request:
-        raise IOError(dir_request.json())
-    else:
+    if create_request:
+        # Set owner & group
         headers = {
             "x-ms-version": "2018-06-17",
             "content-length": "0",
-            "Authorization": check_access_token(dest_spn_id, dest_spn_secret)
+            "Authorization": token_handler.checkAccessToken()
         }
-        add_identity_header(headers, "user", directory["permissions"]["owner"], "x-ms-owner", identity_map)
-        add_identity_header(headers, "group", directory["permissions"]["group"], "x-ms-group", identity_map)
-        dir_url = "{0}?action=setAccessControl".format(dir_base_url)
-        print(dir_url)
-        print(headers)
-        dir_request = requests.patch(dir_url, headers=headers)
-        if not dir_request:
-            raise IOError(dir_request.json())
-        
-max_parallelism=1
-stop_event = threading.Event()
-files_to_copy = queue.Queue()
-threads = [threading.Thread(target=copy_files, args=(files_to_copy, stop_event)) for _ in range(max_parallelism)]
-for file in inventory:
-    if not file["is_folder"]:
-        files_to_copy.put(file)
+        add_identity_header(headers, "user", resource["permissions"]["owner"], "x-ms-owner", identity_map)
+        add_identity_header(headers, "group", resource["permissions"]["group"], "x-ms-group", identity_map)
+        set_owner_url = "https://{0}.dfs.core.windows.net/{1}/{2}?action=setAccessControl".format(account, container, resource["name"])
+        log.debug(set_owner_url)
+        log.debug(headers)
+        set_owner_request = requests.patch(set_owner_url, headers=headers)
+        if not set_owner_request:
+            raise IOError(set_owner_request.json())
+    else:
+        raise IOError(create_request.json())
 
-for thread in threads:
-    thread.daemon = True
-    thread.start()
+def copy_files(source_account, source_container, dest_account, dest_container, sas_token, token_handler, identity_map, work_queue):
+    log = logging.getLogger(threading.currentThread().name)
+    log.debug("Thread starting: %d", threading.currentThread().ident)
+    while not work_queue.isDone():
+        file = work_queue.nextItem()
+        if file:
+            try:
+                log.debug(file["name"])
+                # Create the destination file
+                create_adls_resource(dest_account, 
+                    dest_container,
+                    "file",
+                    file,
+                    token_handler,
+                    identity_map)
+                # Copy the file, 20MB chunks at a time
+                source_url = "http://{0}.blob.core.windows.net/{1}/{2}?{3}".format(source_account, source_container, file["name"], sas_token)
+                dest_base_url = "https://{0}.dfs.core.windows.net/{1}/{2}?".format(dest_account, dest_container, file["name"])
+                for offset in range(0, file["length"], BLOCK_SIZE):
+                    source_request = requests.get(source_url, 
+                        headers = {
+                            "x-ms-range": "bytes={0}-{1}".format(offset, offset + BLOCK_SIZE - 1)
+                        }, 
+                        stream=True)
+                    if source_request:
+                        source_request.raw.decode_content = True
+                        source_request.raw.__dict__["len"] = int(source_request.headers["Content-Length"])
+                        dest_request = requests.patch(dest_base_url + "action=append&position=" + str(offset), 
+                            headers = {
+                                "Authorization": token_handler.checkAccessToken()
+                            },
+                            data = source_request.raw)
+                        if not dest_request:
+                            raise IOError(dest_request.json())
+                    else:
+                        raise IOError(source_request.json())
+                # Flush the file
+                dest_request = requests.patch(dest_base_url + "action=flush&position=" + str(file["length"]),
+                    headers={
+                        "content-length": "0",
+                        "Authorization": token_handler.checkAccessToken()
+                    })
+                if not dest_request:
+                    raise IOError(dest_request.json())
 
-files_to_copy.join()
-stop_event.set()
+                work_queue.itemDone()
+            except IOError as e:
+                log.warning("Failed to copy file: %s. Details: %s", file["name"], e.args)
+    log.debug("Thread ending")
 
-for thread in threads:
-    thread.join()
+if __name__ == '__main__':
+    parser = AdlsCopyUtils.createCommandArgsParser("Remaps identities on HDFS sourced data")
+    parser.add_argument('-A', '--dest-account', required=True, help="The name of the storage account to copy data to")
+    parser.add_argument('-C', '--dest-container', required=True, help="The name of the destination storage container")
+    parser.add_argument('-I', '--dest-spn-id', required=True, help="The client id for the service principal used to authenticate to the destination account")
+    parser.add_argument('-S', '--dest-spn-secret', required=True, help="The client secret for the service principal used to authenticate to the destination account")
+    args = parser.parse_known_args()[0]
 
+    AdlsCopyUtils.configureLogging(args.log_config, args.log_level, args.log_file)
+    print("Copying directories, files and permissions from account: " + args.source_account + " to: " + args.dest_account)
 
+    # OAuth token handler
+    token_handler = OAuthBearerToken(args.dest_spn_id, args.dest_spn_secret)
+
+    # Acquire SAS token, so that we don't have to sign each request (construct as string as Python 2.7 on linux doesn't marshall the args correctly with shell=True)
+    sas_token = AdlsCopyUtils.getSasToken(args.source_account, args.source_key)
+
+    # Get the full account list 
+    inventory = AdlsCopyUtils.getSourceFileList(args.source_account, args.source_key, args.source_container, args.prefix)
+    
+    # Load identity map
+    identity_map = AdlsCopyUtils.loadIdentityMap(args.identity_map)
+
+    # Create the directories first
+    log.info("Creating directory structure in destination")
+    for directory in [x for x in inventory if x["is_folder"]]:
+        dir_base_url = "https://{0}.dfs.core.windows.net/{1}/{2}".format(args.dest_account, args.dest_container, directory["name"])
+        create_adls_resource(args.dest_account, 
+            args.dest_container,
+            "directory",
+            directory,
+            token_handler,
+            identity_map)
+    # Now copy the files in parallel
+    log.info("Copying files from source to destination")
+    AdlsCopyUtils.processWorkQueue(copy_files, 
+        [args.source_account, args.source_container, args.dest_account, args.dest_container, sas_token, token_handler, identity_map], 
+        [file for file in inventory if not file["is_folder"]], 
+        args.max_parallelism)
+
+    print("All work processed. Exiting")

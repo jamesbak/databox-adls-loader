@@ -15,7 +15,9 @@ def update_files_owners(account, container, sas_token, work_queue):
             file["permissions"]["owner"] = AdlsCopyUtils.lookupIdentity(AdlsCopyUtils.IDENTITY_USER, file["permissions"]["owner"], identity_map)
             file["permissions"]["group"] = AdlsCopyUtils.lookupIdentity(AdlsCopyUtils.IDENTITY_GROUP, file["permissions"]["group"], identity_map)
             # Merge the updated information into the other metadata properties, so that we can update in 1 call
-            file["metadata"]["hdi_permission"] = json.dumps(file["permissions"])
+            file["metadata"][AdlsCopyUtils.METDATA_PERMISSIONS] = json.dumps(file["permissions"])
+            if file["is_folder"]:
+                file["metadata"][AdlsCopyUtils.METADATA_ISFOLDER] = "true"
             url = "http://{0}.blob.core.windows.net/{1}/{2}?comp=metadata&{3}".format(account, container, file["name"], sas_token)
             log.debug(url)
             # No portable way to combine 2 dicts
@@ -39,11 +41,13 @@ if __name__ == '__main__':
 
     AdlsCopyUtils.configureLogging(args.log_config, args.log_level, args.log_file)
     print("Remapping identities for file owners in account: " + args.source_account)
+
     # Acquire SAS token, so that we don't have to sign each request (construct as string as Python 2.7 on linux doesn't marshall the args correctly with shell=True)
     sas_token = AdlsCopyUtils.getSasToken(args.source_account, args.source_key)
 
     # Get the full account list 
     inventory = AdlsCopyUtils.getSourceFileList(args.source_account, args.source_key, args.source_container, args.prefix)
+    
     if args.generate_identity_map:
         log.info("Generating identity map from source account to file: " + args.identity_map)
         unique_users = set([x["permissions"]["owner"] for x in inventory])
