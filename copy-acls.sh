@@ -14,40 +14,65 @@ map_identity_type() {
     local identity=$1
     local identity_type=$2
 
-    echo $(jq -r --arg identity $identity --arg identity_type $identity_type '.[] | select(.type == $identity_type and .source == $identity) | .target' $identity_map_file)
+    retval=$(jq -r --arg identity $identity --arg identity_type $identity_type '.[] | select(.type == $identity_type and .source == $identity) | .target' $identity_map_file)
+    if [[ $retval ]]
+    then
+        echo $retval
+    else
+        echo $identity
+    fi
 }
 
 assign_acls() {
-    dest_path=$1
+    destpath=$1
     filename=$2
+    owner=$3
+    group=$4
+    shift
+    shift
     shift
     shift
     aclspec=(${@})
 
-    hadoop fs -Dfs.azure.localuserasfileowner.replace.principals= -setfacl --set "$(IFS=","; echo "${aclspec[*]}")" $destpath$filename 
-}
 
-process_acls() {
+    if [[ $owner ]] && [[ $group ]]
+    then
+        hadoop fs -Dfs.azure.localuserasfileowner.replace.principals= -chown $owner:$group $destpath$filename 
+    fi
+    if [[ ${#aclspec[@]} -gt 0 ]]
+    then
+        hadoop fs -Dfs.azure.localuserasfileowner.replace.principals= -setfacl --set $(IFS=","; echo "${aclspec[*]}") $destpath$filename 
+    fi
+    echo "Assigned Owner:$owner, Group:$group, ACL:${aclspec[*]} to file: $destpath$filename"
+}
+export -f assign_acls
+
+process_acl_entries() {
     source_path=$1
-    dest_path=$2
-    assign_file_acl=$3
-    map_identity=$4
+    map_identity=$2
 
     while read file; do
         file=$(echo $file | cut -d / -f 4-)
         aclspec=()
+        owner=""
+        group=""
         for i in 1 2
         do
-            read owner
-            ownertype=$(echo $owner | cut -d ':' -f 1 | cut -c 3-)
+            read identity
+            ownertype=$(echo $identity | cut -d ':' -f 1 | cut -c 3-)
             identity_type="group"
             if [[ $ownertype == "owner" ]]
             then
                 identity_type="user"
             fi
-            owner=$($map_identity $(echo $owner | cut -d ':' -f 2 | sed -e 's/^[ \t]*//') $identity_type)
-            aclspec+=("$ownertype::$owner")
-            identity_map+=("$identity_type:$owner")
+            identity=$($map_identity $(echo $identity | cut -d ':' -f 2 | sed -e 's/^[ \t]*//') $identity_type)
+            identity_map+=("$identity_type:$identity")
+            if [[ $ownertype == "owner" ]]
+            then
+                owner=$identity
+            else
+                group=$identity
+            fi
         done
         read aclentry
         while [[ $aclentry ]]
@@ -66,8 +91,18 @@ process_acls() {
             fi
             read aclentry
         done
-        $assign_file_acl "$dest_path" "$file" "${aclspec[@]}"
+        echo "'$file'" "'$owner'" "'$group'" "${aclspec[@]}"
     done < <(hadoop fs -Dfs.azure.localuserasfileowner.replace.principals= -getfacl -R $source_path)
+}
+
+process_acls() {
+    source_path=$1
+    dest_path=$2
+    assign_file_acl=$3
+    map_identity=$4
+
+    echo "Reading file & ACLs list from source"
+    process_acl_entries $source_path $map_identity | tr '\n' '\0' | xargs -0 -n1 -P 10 -I % bash -c "$assign_file_acl $dest_path %"
 }
 
 while getopts "s:d:i:g" option; 
