@@ -2,42 +2,11 @@
 
 import requests
 import subprocess, datetime, json, itertools, os.path, threading, argparse, logging
-from shared.adls_copy_utils import AdlsCopyUtils
+from adls_copy_utils import AdlsCopyUtils, OAuthBearerToken
 
 BLOCK_SIZE = 20 * pow(2, 20)
 
 log = logging.getLogger(__name__)
-
-class OAuthBearerToken:
-    def __init__(self, client_id, client_secret):
-        self.access_token = ""
-        self.token_refresh_time = datetime.datetime.utcnow()
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.mutex = threading.Lock()
-
-    def checkAccessToken(self):
-        if datetime.datetime.utcnow() > self.token_refresh_time:
-            with self.mutex:            
-                if datetime.datetime.utcnow() > self.token_refresh_time:
-                    log.debug("Refreshing OAuth token")
-                    with requests.post("https://login.microsoftonline.com/common/oauth2/v2.0/token", 
-                            data={
-                                "client_id": self.client_id, 
-                                "client_secret": self.client_secret,
-                                "scope": "https://storage.azure.com/.default",
-                                "grant_type": "client_credentials"
-                            },
-                            headers={
-                                "Content-Type": "application/x-www-form-urlencoded"
-                            }) as auth_request:
-                        token_response = auth_request.json()
-                        if auth_request:
-                            self.token_refresh_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=token_response["expires_in"])
-                            self.access_token = token_response["access_token"]
-                        else:
-                            raise IOError(token_response)
-        return "Bearer " + self.access_token
 
 def add_identity_header(headers, identity_type, identity, header, identity_map):
     mapped_identity = AdlsCopyUtils.lookupIdentity(identity_type, identity, identity_map)
@@ -52,7 +21,7 @@ def create_adls_resource(account, container, resource_type, resource, token_hand
     log.debug(resource_uri)
     create_request = requests.put(resource_uri,
         headers = {
-            "x-ms-version": "2018-06-17",
+            "x-ms-version": AdlsCopyUtils.ADLS_REST_VERSION,
             "content-length": "0", 
             "x-ms-permissions": resource["permissions"]["permissions"],
             "x-ms-umask": "0000",
@@ -61,7 +30,7 @@ def create_adls_resource(account, container, resource_type, resource, token_hand
     if create_request:
         # Set owner & group
         headers = {
-            "x-ms-version": "2018-06-17",
+            "x-ms-version": AdlsCopyUtils.ADLS_REST_VERSION,
             "content-length": "0",
             "Authorization": token_handler.checkAccessToken()
         }
@@ -127,11 +96,7 @@ def copy_files(source_account, source_container, dest_account, dest_container, s
     log.debug("Thread ending")
 
 if __name__ == '__main__':
-    parser = AdlsCopyUtils.createCommandArgsParser("Remaps identities on HDFS sourced data")
-    parser.add_argument('-A', '--dest-account', required=True, help="The name of the storage account to copy data to")
-    parser.add_argument('-C', '--dest-container', required=True, help="The name of the destination storage container")
-    parser.add_argument('-I', '--dest-spn-id', required=True, help="The client id for the service principal used to authenticate to the destination account")
-    parser.add_argument('-S', '--dest-spn-secret', required=True, help="The client secret for the service principal used to authenticate to the destination account")
+    parser = AdlsCopyUtils.createCommandArgsParser("Remaps identities on HDFS sourced data", add_dest_args=True)
     args = parser.parse_known_args()[0]
 
     AdlsCopyUtils.configureLogging(args.log_config, args.log_level, args.log_file)

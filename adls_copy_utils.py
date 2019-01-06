@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import logging, subprocess, json, datetime, os.path, itertools, threading, argparse
+import requests
 from collections import deque
 try:
     import queue
@@ -10,6 +11,8 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 class AdlsCopyUtils():
+
+    ADLS_REST_VERSION = "2018-11-09"
 
     IDENTITY_USER = "user"
     IDENTITY_GROUP = "group"
@@ -25,13 +28,25 @@ class AdlsCopyUtils():
             logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=getattr(logging, log_level.upper()), filename=log_file)
 
     @staticmethod
-    def createCommandArgsParser(description):
+    def createCommandArgsParser(description, add_source_args=True, add_dest_args=False):
         parser = argparse.ArgumentParser(description=description)
-        parser.add_argument('-s', '--source-account', required=True, help="The name of the storage account to process")
-        parser.add_argument('-k', '--source-key', required=True, help="The storage account key")
-        parser.add_argument('-c', '--source-container', required=True, help="The name of the storage account container")
+        if add_source_args:
+            parser.add_argument('-s', '--source-account', required=True, help="The name of the storage account to process")
+            parser.add_argument('-k', '--source-key', required=True, help="The storage account key")
+            parser.add_argument('-c', '--source-container', required=True, help="The name of the storage account container")
+            parser.add_argument('-p', '--prefix', default='""', help="A prefix that constrains the processing. Use this option to process entire account on multiple instances")
+        if type(add_dest_args) is tuple:
+            add_dest_flag = add_dest_args[0]
+            dest_required_flag = add_dest_args[1]
+        else:
+            add_dest_flag = add_dest_args
+            dest_required_flag = True
+        if add_dest_flag:
+            parser.add_argument('-A', '--dest-account', required=dest_required_flag, help="The name of the storage account to copy data to")
+            parser.add_argument('-C', '--dest-container', required=dest_required_flag, help="The name of the destination storage container")
+            parser.add_argument('-I', '--dest-spn-id', required=dest_required_flag, help="The client id for the service principal used to authenticate to the destination account")
+            parser.add_argument('-S', '--dest-spn-secret', required=dest_required_flag, help="The client secret for the service principal used to authenticate to the destination account")
         parser.add_argument('-i', '--identity-map', default="./identity_map.json", help="The name of the JSON file containing the initial map of source identities to target identities")
-        parser.add_argument('-p', '--prefix', default='""', help="A prefix that constrains the processing. Use this option to process entire account on multiple instances")
         parser.add_argument('-t', '--max-parallelism', type=int, default=10, help="The number of threads to process this work in parallel")
         parser.add_argument('-f', '--log-config', help="The name of a configuration file for logging.")
         parser.add_argument('-l', '--log-file', help="Name of file to have log output written to (default is stdout/stderr)")
@@ -127,4 +142,35 @@ class AdlsCopyUtils():
         work_queue.stop_event.set()
         for thread in threads:
             thread.join()
+
+class OAuthBearerToken:
+    def __init__(self, client_id, client_secret):
+        self.access_token = ""
+        self.token_refresh_time = datetime.datetime.utcnow()
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.mutex = threading.Lock()
+
+    def checkAccessToken(self):
+        if datetime.datetime.utcnow() > self.token_refresh_time:
+            with self.mutex:            
+                if datetime.datetime.utcnow() > self.token_refresh_time:
+                    log.debug("Refreshing OAuth token")
+                    with requests.post("https://login.microsoftonline.com/common/oauth2/v2.0/token", 
+                            data={
+                                "client_id": self.client_id, 
+                                "client_secret": self.client_secret,
+                                "scope": "https://storage.azure.com/.default",
+                                "grant_type": "client_credentials"
+                            },
+                            headers={
+                                "Content-Type": "application/x-www-form-urlencoded"
+                            }) as auth_request:
+                        token_response = auth_request.json()
+                        if auth_request:
+                            self.token_refresh_time = datetime.datetime.utcnow() + datetime.timedelta(seconds=token_response["expires_in"])
+                            self.access_token = token_response["access_token"]
+                        else:
+                            raise IOError(token_response)
+        return "Bearer " + self.access_token
 

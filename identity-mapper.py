@@ -2,7 +2,7 @@
 
 import requests
 import sys, subprocess, datetime, json, itertools, os.path, threading, argparse, logging
-from shared.adls_copy_utils import AdlsCopyUtils
+from adls_copy_utils import AdlsCopyUtils
 
 log = logging.getLogger(__name__)
 
