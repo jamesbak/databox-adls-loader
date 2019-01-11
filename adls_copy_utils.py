@@ -132,8 +132,9 @@ class AdlsCopyUtils():
         log.debug("Processing %d files using %d threads", work_queue.size(), max_parallelism)
         args.extend([work_queue])
         args_tuple = tuple(args)
-        threads = [threading.Thread(target=target, args=args_tuple, daemon=True) for _ in range(max_parallelism)]
+        threads = [threading.Thread(target=target, args=args_tuple) for _ in range(max_parallelism)]
         for thread in threads:
+            thread.daemon=True
             thread.start()
         # Wait for the queue to be drained
         work_queue.work_queue.join()
@@ -150,6 +151,8 @@ class OAuthBearerToken:
         self.client_id = client_id
         self.client_secret = client_secret
         self.mutex = threading.Lock()
+        # Validate the args by acquiring the token
+        self.checkAccessToken()
 
     def checkAccessToken(self):
         if datetime.datetime.utcnow() > self.token_refresh_time:

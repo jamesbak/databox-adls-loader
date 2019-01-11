@@ -8,31 +8,39 @@ noop1() {
 
 process_acl_entries() {
     source_path=$1
+    is_relative_path=$(if [[ ${source_path:0:1} == "/" ]] ; then echo 1; else echo 0; fi)
 
     while read file; do
-        file=$(echo $file | cut -d / -f 4-)
+        if (( $is_relative_path )); then
+            file=$(echo $file | cut -d / -f 2-)
+        else
+            file=$(echo $file | cut -d / -f 4-)
+        fi
         aclspec=()
         owner=""
         group=""
-        for i in 1 2
+        while true
         do
             read identity
+            if [[ ${identity:0:1} != '#' ]] 
+            then
+                aclentry=identity
+                break
+            fi
             ownertype=$(echo $identity | cut -d ':' -f 1 | cut -c 3-)
             identity=$(echo $identity | cut -d ':' -f 2 | sed -e 's/^[ \t]*//')
             if [[ $ownertype == "owner" ]]
             then
                 owner=$identity
-            else
+            elif [[ $ownertype == "group" ]]
+            then
                 group=$identity
             fi
         done
         read aclentry
         while [[ $aclentry ]]
         do
-            entry_type=$(echo $aclentry | cut -d ':' -f 1)
-            entry_identity=$(echo $aclentry | cut -d ':' -f 2)
-            permissions=$(echo $aclentry | cut -d ':' -f 3)
-            aclspec+=("$entry_type:$entry_identity:$permissions")
+            aclspec+=($aclentry)
             read aclentry
         done
         echo "'$file'" "'$owner'" "'$group'" "${aclspec[@]}"

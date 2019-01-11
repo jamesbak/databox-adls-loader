@@ -4,7 +4,64 @@ The key challenge for customers with existing on-premises Hadoop clusters that w
 
 This set of scripts provides specific support for moving big data analytics datasets from an on-premises HDFS cluster to ADLS Gen2 using a variety of Hadoop and custom tooling.
 
-This method assumes the presence of a Hadoop cluster in the on-premises environment (ie. the source of the HDFS data) and a Hadoop cluster in Azure (eg. HDInsight). Hadoop is required for distributed copy (distcp).
+## Prerequisites
 
+The mechanism to copy data from an on-premise HDFS cluster to ADLS Gen2 relies on the following:
+
+1. A Hadoop cluster containing the source data to be migrated.
+2. A head or edge node on the above cluster that you can SSH onto with python (>= 2.7 or 3) installed with `pip`.
+2. A Databox.
+3. A Hadoop cluster running in Azure (eg. HDInsight, etc.).
+
+## Process - Overview
+
+1. Use the Hadoop tool `distcp` to copy data from the source HDFS cluster to the Databox.
+2. Ship the Databox to Azure and have the data loaded into a non-HNS enabled Storage Account
+3. Use the Hadoop tool `distcp` to copy data from the non-HNS enabled Storage Account to the HNS-enabled ADLS Gen2 account
+4. Copy and translate permissions from the HDFS cluster to the ADLS Gen2 account using the supplied scripts
+
+## Step 1 - Distcp data from HDFS to Databox
+
+1. Setup the Databox onto the on-premise network following instructions here: <<TODO: Add link>>
+2. Use cluster management tools to add the Databox DNS name to every node's `/etc/hosts` file
+2. On the on-premise Hadoop cluster, run the following `distcp` job to copy data and metadata from HDFS to Databox:
+```bash
+sudo -u hdfs hadoop distcp -Dfs.azure.account.key.{databox_dns}={databox_key} /[source directory] wasb://{container}@{databox_dns}/[path]
+```
+## Step 2 - Ship the Databox to Microsoft
+
+Now that the Databox is fully loaded with a copy of the HDFS data, prepare and ship the Databox back to Microsoft <<TODO: Add link>>. The data will be loaded into the account (with HNS disabled) you specified when ordering the Databox.
+
+## Step 3 - Copy data from HNS disabled account to ADLS Gen2 account
+
+1. On the cloud-based Hadoop cluster (eg. HDInsight), run the following `distcp` command to copy the data and the metadata for the account that Databox loaded the data into (with HNS disabled) into your ADLS Gen2 account. It is assumed that the destination ADLS Gen2 account has already been configured on the cluster:
+```bash
+hadoop distcp -Dfs.azure.account.key.{source_account}.dfs.windows.net={source_account_key} abfs://{source_container}@{source_account}.dfs.windows.net/[path] abfs://{dest_container}@{dest_account}.dfs.windows.net/[path]
+```
+
+## Step 4 - Copy and map identities and permissions from HDFS to ADLS Gen2
+
+1. On the on-premise Hadoop cluster edge or head node, execute the following command to clone this Github repo. This will download the necessary scripts to the local computer:
+```bash
+git clone https://github.com/jamesbak/databox-adls-loader.git
+cd databox-adls-loader
+```
+2. Ensure that the `jq` package is installed. Eg. For Ubuntu:
+```bash
+sudo apt-get install jq
+``` 
+3. Install the `requests` python package:
+```bash
+pip install requests
+```
+4. Set execute permissions on the required scripts
+```bash
+chmod +x *.py *.sh
+```
+4. On the on-premise Hadoop cluster, execute the following Bash command to generate a list of copied 
+files with their permissions (depending on the number of files in HDFS, this command may take a long time to run):
+```bash
+sudo -u hdfs ./copy-acls.sh -s /{hdfs_path} > ./filelist.json
+```
 
 
