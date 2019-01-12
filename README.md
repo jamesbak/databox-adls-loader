@@ -24,9 +24,16 @@ The mechanism to copy data from an on-premise HDFS cluster to ADLS Gen2 relies o
 
 1. Setup the Databox onto the on-premise network following instructions here: <<TODO: Add link>>
 2. Use cluster management tools to add the Databox DNS name to every node's `/etc/hosts` file
-2. On the on-premise Hadoop cluster, run the following `distcp` job to copy data and metadata from HDFS to Databox:
+3. When using `distcp` to copy files from the on-premise Hadoop cluster to the Databox, some directories will need to be excluded (they generally contain state information to keep the cluster running and so are not important to copy). The `distcp` tool supports a mechanism to exclude files & directories by specifying a series of regular expressions (1 per line) that exclude matching paths. On the on-premise Hadoop cluster where you will be initiating the `distcp` job, create a file with the list of directories to exclude, similar to the following:
+```
+exclusions.lst
+
+.*ranger/audit.*
+.*/hbase/data/WALs.*
+```
+4. On the on-premise Hadoop cluster, run the following `distcp` job to copy data and metadata from HDFS to Databox:
 ```bash
-sudo -u hdfs hadoop distcp -Dfs.azure.account.key.{databox_dns}={databox_key} /[source directory] wasb://{container}@{databox_dns}/[path]
+sudo -u hdfs hadoop distcp -Dfs.azure.account.key.{databox_dns}={databox_key} -filter ./exclusions.lst /[source directory] wasb://{container}@{databox_dns}/[path]
 ```
 ## Step 2 - Ship the Databox to Microsoft
 
@@ -58,7 +65,8 @@ pip install requests
 ```bash
 chmod +x *.py *.sh
 ```
-4. On the on-premise Hadoop cluster, execute the following Bash command to generate a list of copied 
+5. Create a service principal & grant 'Storage Blobs Data Owner' role membership
+6. On the on-premise Hadoop cluster, execute the following Bash command to generate a list of copied 
 files with their permissions (depending on the number of files in HDFS, this command may take a long time to run):
 ```bash
 sudo -u hdfs ./copy-acls.sh -s /{hdfs_path} > ./filelist.json

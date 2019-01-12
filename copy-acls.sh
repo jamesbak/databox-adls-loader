@@ -24,7 +24,7 @@ process_acl_entries() {
             read identity
             if [[ ${identity:0:1} != '#' ]] 
             then
-                aclentry=identity
+                aclentry=$identity
                 break
             fi
             ownertype=$(echo $identity | cut -d ':' -f 1 | cut -c 3-)
@@ -37,10 +37,9 @@ process_acl_entries() {
                 group=$identity
             fi
         done
-        read aclentry
         while [[ $aclentry ]]
         do
-            aclspec+=($aclentry)
+            aclspec+=($(echo $aclentry | cut -d "#" -f 1))
             read aclentry
         done
         echo "'$file'" "'$owner'" "'$group'" "${aclspec[@]}"

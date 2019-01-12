@@ -10,9 +10,14 @@ def add_identity_header(headers, identity_type, identity, header, identity_map):
     mapped_identity = AdlsCopyUtils.lookupIdentity(identity_type, identity, identity_map)
     if mapped_identity:
         headers[header] = mapped_identity
-    else:
-        # TODO: Lookup identity in AAD
-        pass
+
+def map_acl_entry(entry, identity_map):
+    # Format is [scope:][type]:[id]:[permissions]
+    items = entry.split(":")
+    id_idx = 1 if len(items) == 3 else 2
+    if items[id_idx]:
+        items[id_idx] = AdlsCopyUtils.lookupIdentity(items[id_idx - 1], items[id_idx], identity_map)
+    return ":".join(items)
 
 def apply_file_acls(account, container, token_handler, identity_map, work_queue):
     log = logging.getLogger(threading.currentThread().name)
@@ -26,11 +31,12 @@ def apply_file_acls(account, container, token_handler, identity_map, work_queue)
                     filename = "/" 
                 log.debug(filename)
                 # Set owner & group
+                mapped_acl = [map_acl_entry(entry, identity_map) for entry in file["acl"]]
                 headers = {
                     "x-ms-version": AdlsCopyUtils.ADLS_REST_VERSION,
                     "content-length": "0",
                     "Authorization": token_handler.checkAccessToken(),
-                    "x-ms-acl": ",".join(file["acl"])
+                    "x-ms-acl": ",".join(mapped_acl)
                 }
                 add_identity_header(headers, "user", file["owner"], "x-ms-owner", identity_map)
                 add_identity_header(headers, "group", file["group"], "x-ms-group", identity_map)
@@ -47,10 +53,12 @@ def apply_file_acls(account, container, token_handler, identity_map, work_queue)
                             # Allow 'PathNotFound' errors to fail silently
                             code = err["error"]["code"]
                             if code == "PathNotFound":
-                                log.info("Skipping missing file: %s", filename)
+                                log.debug("Skipping missing file: %s", filename)
                                 throw_err = False
                             elif code == "InvalidNamedUserOrNamedGroup":
-                                err["m-ms-acl"] = ",".join(file["acl"])
+                                err["m-ms-acl"] = ",".join(mapped_acl)
+                                err["owner"] = headers["owner"]
+                                err["group"] = headers["group"]
                     if not require_retry:
                         work_queue.itemDone()
                     if throw_err:
@@ -67,9 +75,6 @@ if __name__ == '__main__':
 
     AdlsCopyUtils.configureLogging(args.log_config, args.log_level, args.log_file)
     print("Processing source ACLs")
-
-    # OAuth token handler
-    token_handler = OAuthBearerToken(args.dest_spn_id, args.dest_spn_secret)
 
     # Queue the items up
     source_fd = sys.stdin
@@ -104,6 +109,9 @@ if __name__ == '__main__':
         if not args.dest_account or not args.dest_container:
             parser.print_help()
             parser.exit()
+
+        # OAuth token handler
+        token_handler = OAuthBearerToken(args.dest_spn_id, args.dest_spn_secret)
 
         log.info("Applying ACLs in destination")
         AdlsCopyUtils.processWorkQueue(apply_file_acls,
