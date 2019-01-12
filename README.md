@@ -65,11 +65,20 @@ pip install requests
 ```bash
 chmod +x *.py *.sh
 ```
-5. Create a service principal & grant 'Storage Blobs Data Owner' role membership
+5. Create a service principal & grant 'Storage Blobs Data Owner' role membership. Record the client id & secret, so that these values can be used to authenticate to the ADLS Gen2 account in the next step.
 6. On the on-premise Hadoop cluster, execute the following Bash command to generate a list of copied 
 files with their permissions (depending on the number of files in HDFS, this command may take a long time to run):
 ```bash
 sudo -u hdfs ./copy-acls.sh -s /{hdfs_path} > ./filelist.json
+```
+7. Generate the list of unique identities that need to be mapped to AAD-based identities:
+```bash
+./copy-acls.py -s ./filelist.json -i id_map.json -g
+```
+8. Using a text editor open the generated `id_map.json` file. For each JSON object in the file, update the `target` attribute (either an AAD User Principal Name (UPN) or objectId (OID)) with the mapped identity. Once complete save the file for use in the next step.
+9. Run the following script to apply permissions to the copied data in the ADLS Gen2 account:
+```bash
+./copy-acls.py -s ./filelist.json -i ./id_map.json  -A adlsgen2hnswestus2 -C databox1 --dest-spn-id {spn_client_id}  --dest-spn-secret {spn_secret}
 ```
 
 
